@@ -259,15 +259,8 @@ func main() {
 		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
 	}
 
-	if config.S3Region == "" {
-		config.S3Region = "eu-central"
-	}
-	if config.S3Endpoint == "" {
-		config.S3Endpoint = "https://fsn1.your-objectstorage.com"
-	}
-
-	if config.S3BucketName == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" {
-		slog.Error("missing required environment variables: S3_BUCKET_NAME, ELKS_USERNAME, SLACK_WEBHOOK_URL")
+	if config.S3BucketName == "" || config.S3Endpoint == "" || config.S3Region == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" {
+		slog.Error("missing required environment variables: S3_BUCKET_NAME, S3_ENDPOINT, S3_REGION, ELKS_USERNAME, SLACK_WEBHOOK_URL")
 		os.Exit(1)
 	}
 
