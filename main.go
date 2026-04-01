@@ -45,7 +45,8 @@ type SlackPayload struct {
 type IncomingResponse struct {
 	Play string `json:"play"`
 	Next struct {
-		Record string `json:"record"`
+		Record           string `json:"record"`
+		SilenceDetection string `json:"silencedetection"`
 	} `json:"next"`
 }
 
@@ -112,9 +113,11 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 		resp := IncomingResponse{
 			Play: config.VoicemailAudio,
 			Next: struct {
-				Record string `json:"record"`
+				Record           string `json:"record"`
+				SilenceDetection string `json:"silencedetection"`
 			}{
-				Record: config.Host + "/voicemail",
+				Record:           config.Host + "/voicemail",
+				SilenceDetection: "no",
 			},
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
