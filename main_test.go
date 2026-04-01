@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,17 @@ func (m *mockUploader) PutObject(_ context.Context, input *s3.PutObjectInput, _ 
 	return &s3.PutObjectOutput{}, m.err
 }
 
+type mockTranscriber struct {
+	called bool
+	text   string
+	err    error
+}
+
+func (m *mockTranscriber) Transcribe(_ context.Context, _ []byte, _ string) (string, error) {
+	m.called = true
+	return m.text, m.err
+}
+
 func testConfig() Configuration {
 	return Configuration{
 		SlackName:       "testbot",
@@ -39,9 +51,21 @@ func testConfig() Configuration {
 	}
 }
 
+func newElksServer(data []byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "testuser" || pass != "testpass" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Write(data)
+	}))
+}
+
 func TestIncomingCall(t *testing.T) {
 	cfg := testConfig()
-	mux := newMux(cfg, http.DefaultClient, &mockUploader{})
+	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
 
 	req := httptest.NewRequest("POST", "/incoming_call", nil)
 	w := httptest.NewRecorder()
@@ -70,7 +94,7 @@ func TestIncomingCall(t *testing.T) {
 }
 
 func TestIncomingCallRejectsGET(t *testing.T) {
-	mux := newMux(testConfig(), http.DefaultClient, &mockUploader{})
+	mux := newMux(testConfig(), http.DefaultClient, &mockUploader{}, nil)
 
 	req := httptest.NewRequest("GET", "/incoming_call", nil)
 	w := httptest.NewRecorder()
@@ -82,7 +106,7 @@ func TestIncomingCallRejectsGET(t *testing.T) {
 }
 
 func TestVoicemailMissingFields(t *testing.T) {
-	mux := newMux(testConfig(), http.DefaultClient, &mockUploader{})
+	mux := newMux(testConfig(), http.DefaultClient, &mockUploader{}, nil)
 
 	tests := []struct {
 		name   string
@@ -108,20 +132,10 @@ func TestVoicemailMissingFields(t *testing.T) {
 }
 
 func TestVoicemailSuccess(t *testing.T) {
-	// Mock 46elks WAV server
 	wavData := []byte("fake-wav-data")
-	elksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != "testuser" || pass != "testpass" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "audio/wav")
-		w.Write(wavData)
-	}))
+	elksServer := newElksServer(wavData)
 	defer elksServer.Close()
 
-	// Mock Slack webhook server
 	var slackBody []byte
 	slackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slackBody, _ = io.ReadAll(r.Body)
@@ -133,7 +147,8 @@ func TestVoicemailSuccess(t *testing.T) {
 	cfg.SlackWebHookURL = slackServer.URL
 
 	uploader := &mockUploader{}
-	mux := newMux(cfg, elksServer.Client(), uploader)
+	tr := &mockTranscriber{text: "Hello, this is a test message."}
+	mux := newMux(cfg, elksServer.Client(), uploader, tr)
 
 	form := url.Values{
 		"from": {"+46701234567"},
@@ -148,7 +163,7 @@ func TestVoicemailSuccess(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	// Verify S3 upload was called with correct data
+	// Verify S3 upload
 	if !uploader.called {
 		t.Fatal("expected S3 upload to be called")
 	}
@@ -163,7 +178,12 @@ func TestVoicemailSuccess(t *testing.T) {
 		t.Errorf("uploaded data mismatch: got %q", uploadedBody)
 	}
 
-	// Verify Slack was notified
+	// Verify transcription was called
+	if !tr.called {
+		t.Fatal("expected transcriber to be called")
+	}
+
+	// Verify Slack message contains caller, URL, and transcription
 	var slackPayload SlackPayload
 	if err := json.Unmarshal(slackBody, &slackPayload); err != nil {
 		t.Fatalf("failed to decode Slack payload: %v", err)
@@ -177,6 +197,96 @@ func TestVoicemailSuccess(t *testing.T) {
 	if !strings.Contains(slackPayload.Text, "s3.example.com/test-bucket/voicemail/") {
 		t.Errorf("expected Slack message to contain S3 URL, got %q", slackPayload.Text)
 	}
+	if !strings.Contains(slackPayload.Text, "Hello, this is a test message.") {
+		t.Errorf("expected Slack message to contain transcription, got %q", slackPayload.Text)
+	}
+}
+
+func TestVoicemailNoTranscriber(t *testing.T) {
+	wavData := []byte("fake-wav-data")
+	elksServer := newElksServer(wavData)
+	defer elksServer.Close()
+
+	var slackBody []byte
+	slackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slackBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slackServer.Close()
+
+	cfg := testConfig()
+	cfg.SlackWebHookURL = slackServer.URL
+
+	uploader := &mockUploader{}
+	mux := newMux(cfg, elksServer.Client(), uploader, nil)
+
+	form := url.Values{
+		"from": {"+46701234567"},
+		"wav":  {elksServer.URL + "/recording.wav"},
+	}
+	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Slack message should not contain a quote block
+	var slackPayload SlackPayload
+	if err := json.Unmarshal(slackBody, &slackPayload); err != nil {
+		t.Fatalf("failed to decode Slack payload: %v", err)
+	}
+	if strings.Contains(slackPayload.Text, "\n>") {
+		t.Errorf("expected no transcription quote, got %q", slackPayload.Text)
+	}
+}
+
+func TestVoicemailTranscriptionFailureStillSucceeds(t *testing.T) {
+	wavData := []byte("fake-wav-data")
+	elksServer := newElksServer(wavData)
+	defer elksServer.Close()
+
+	var slackBody []byte
+	slackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slackBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slackServer.Close()
+
+	cfg := testConfig()
+	cfg.SlackWebHookURL = slackServer.URL
+
+	uploader := &mockUploader{}
+	tr := &mockTranscriber{err: errors.New("whisper API error")}
+	mux := newMux(cfg, elksServer.Client(), uploader, tr)
+
+	form := url.Values{
+		"from": {"+46701234567"},
+		"wav":  {elksServer.URL + "/recording.wav"},
+	}
+	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// Should still succeed — transcription failure is non-fatal
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !uploader.called {
+		t.Fatal("expected S3 upload to be called")
+	}
+
+	// Slack message should be sent without transcription
+	var slackPayload SlackPayload
+	if err := json.Unmarshal(slackBody, &slackPayload); err != nil {
+		t.Fatalf("failed to decode Slack payload: %v", err)
+	}
+	if strings.Contains(slackPayload.Text, "\n>") {
+		t.Errorf("expected no transcription quote on failure, got %q", slackPayload.Text)
+	}
 }
 
 func TestVoicemailS3Failure(t *testing.T) {
@@ -187,7 +297,7 @@ func TestVoicemailS3Failure(t *testing.T) {
 
 	cfg := testConfig()
 	uploader := &mockUploader{err: io.ErrUnexpectedEOF}
-	mux := newMux(cfg, elksServer.Client(), uploader)
+	mux := newMux(cfg, elksServer.Client(), uploader, nil)
 
 	form := url.Values{
 		"from": {"+46701234567"},
@@ -210,11 +320,10 @@ func TestVoicemailSlackFailureStillSucceeds(t *testing.T) {
 	defer elksServer.Close()
 
 	cfg := testConfig()
-	// Point Slack webhook at an unreachable URL
 	cfg.SlackWebHookURL = "http://127.0.0.1:1"
 
 	uploader := &mockUploader{}
-	mux := newMux(cfg, elksServer.Client(), uploader)
+	mux := newMux(cfg, elksServer.Client(), uploader, nil)
 
 	form := url.Values{
 		"from": {"+46701234567"},
@@ -225,7 +334,6 @@ func TestVoicemailSlackFailureStillSucceeds(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
-	// Should still return 200 — voicemail was saved even though Slack failed
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 even when Slack fails, got %d", w.Code)
 	}

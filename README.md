@@ -5,6 +5,7 @@
 Telefonista is a simple voicemail service that sends recorded messages to a
 Slack channel (or user). It uses the [46elks](https://46elks.com/) telephony
 API and stores recordings in S3-compatible object storage (e.g. Hetzner).
+Optionally transcribes voicemails using OpenAI's Whisper API.
 
 ## Environment variables
 
@@ -17,6 +18,7 @@ API and stores recordings in S3-compatible object storage (e.g. Hetzner).
 | `S3_BUCKET_NAME` | Bucket name for storing recordings | Yes |
 | `S3_ENDPOINT` | S3-compatible endpoint URL (default: `https://fsn1.your-objectstorage.com`) | No |
 | `S3_REGION` | Storage region (default: `eu-central`) | No |
+| `OPENAI_API_KEY` | OpenAI API key for Whisper transcription (omit to disable) | No |
 | `SLACK_WEBHOOK_URL` | Slack incoming webhook URL | Yes |
 | `SLACK_CHANNEL` | Slack channel to post to | No |
 | `SLACK_NAME` | Bot display name in Slack | No |

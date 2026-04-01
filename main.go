@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"time"
@@ -26,11 +27,12 @@ type Configuration struct {
 	VoicemailAudio  string
 	ElksUserName    string
 	ElksPassword    string
-	S3AccessKey  string
-	S3SecretKey  string
-	S3Region     string
-	S3Endpoint   string
-	S3BucketName string
+	S3AccessKey    string
+	S3SecretKey    string
+	S3Region       string
+	S3Endpoint     string
+	S3BucketName   string
+	OpenAIAPIKey   string
 }
 
 type SlackPayload struct {
@@ -51,7 +53,59 @@ type objectUploader interface {
 	PutObject(ctx context.Context, input *s3.PutObjectInput, opts ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 }
 
-func newMux(config Configuration, httpClient *http.Client, uploader objectUploader) *http.ServeMux {
+type transcriber interface {
+	Transcribe(ctx context.Context, audio []byte, filename string) (string, error)
+}
+
+type whisperTranscriber struct {
+	apiKey string
+	client *http.Client
+}
+
+func (w *whisperTranscriber) Transcribe(ctx context.Context, audio []byte, filename string) (string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("creating form file: %w", err)
+	}
+	if _, err := part.Write(audio); err != nil {
+		return "", fmt.Errorf("writing audio data: %w", err)
+	}
+	if err := writer.WriteField("model", "whisper-1"); err != nil {
+		return "", fmt.Errorf("writing model field: %w", err)
+	}
+	writer.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/audio/transcriptions", &body)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+w.apiKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := w.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("whisper API returned %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding response: %w", err)
+	}
+	return result.Text, nil
+}
+
+func newMux(config Configuration, httpClient *http.Client, uploader objectUploader, t transcriber) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /incoming_call", func(w http.ResponseWriter, r *http.Request) {
@@ -126,14 +180,30 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 			return
 		}
 
+		// Transcribe audio
+		var transcription string
+		if t != nil {
+			slog.Info("transcribing audio")
+			transcription, err = t.Transcribe(r.Context(), audio, "voicemail.wav")
+			if err != nil {
+				slog.Error("transcription failed", "error", err)
+				// Continue without transcription — voicemail is saved
+			}
+		}
+
 		// Post to Slack
 		s3URL := fmt.Sprintf("%s/%s/%s", config.S3Endpoint, config.S3BucketName, path)
 		slog.Info("posting to Slack", "channel", config.SlackChannel)
 
+		slackText := "New voice message from " + from + " <" + s3URL + ">!"
+		if transcription != "" {
+			slackText += "\n>" + transcription
+		}
+
 		payload := SlackPayload{
 			UserName: config.SlackName,
 			IconURL:  config.SlackIconURL,
-			Text:     "New voice message from " + from + " <" + s3URL + ">!",
+			Text:     slackText,
 			Channel:  config.SlackChannel,
 		}
 
@@ -183,6 +253,7 @@ func main() {
 		S3Region:        os.Getenv("S3_REGION"),
 		S3Endpoint:      os.Getenv("S3_ENDPOINT"),
 		S3BucketName:    os.Getenv("S3_BUCKET_NAME"),
+		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
 	}
 
 	if config.S3Region == "" {
@@ -204,7 +275,13 @@ func main() {
 	})
 
 	httpClient := &http.Client{Timeout: 20 * time.Second}
-	mux := newMux(config, httpClient, s3Client)
+
+	var t transcriber
+	if config.OpenAIAPIKey != "" {
+		t = &whisperTranscriber{apiKey: config.OpenAIAPIKey, client: httpClient}
+	}
+
+	mux := newMux(config, httpClient, s3Client, t)
 
 	port := os.Getenv("PORT")
 	if port == "" {
