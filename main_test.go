@@ -309,6 +309,35 @@ func TestVoicemailTranscriptionFailureStillSucceeds(t *testing.T) {
 	}
 }
 
+func TestVoicemailTooLarge(t *testing.T) {
+	// Create a server that returns more than 50MB
+	bigData := make([]byte, 50*1024*1024+1)
+	elksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bigData)
+	}))
+	defer elksServer.Close()
+
+	cfg := testConfig()
+	uploader := &mockUploader{}
+	mux := newMux(cfg, elksServer.Client(), uploader, nil)
+
+	form := url.Values{
+		"from": {"+46701234567"},
+		"wav":  {elksServer.URL + "/recording.wav"},
+	}
+	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized WAV, got %d", w.Code)
+	}
+	if uploader.called {
+		t.Fatal("S3 upload should not be called for oversized files")
+	}
+}
+
 func TestVoicemailS3Failure(t *testing.T) {
 	elksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("fake-wav"))
