@@ -7,7 +7,19 @@ Slack channel (or user). It uses the [46elks](https://46elks.com/) telephony
 API and stores recordings in S3-compatible object storage (e.g. Hetzner).
 Optionally transcribes voicemails using OpenAI's Whisper API.
 
-## How it works
+
+<img width="413" height="225" alt="telefonista-slack&#39;" src="https://github.com/user-attachments/assets/5bd8e624-f90a-45b6-9f42-907ade3de576" />
+
+## What you need
+
+- Somewhere to host the service (I use [Fly.io](https://fly.io))
+- S3-compatible object storage (I use [Hetzner](https://www.hetzner.com))
+- [Slack](https://slack.com/) (you need to create a custom App with an incoming web hook enabled)
+- An [46elks](https://46elks.se) account and a phone number with `voice_call` set to your `<hostname>/incoming_call?secret=<secret>`)
+- An [OpenAI](https://platform.openai.com/) API key (if you want speech-to-text transcription)
+- An audio file with your intro message (mp3, ogg or wav format)
+
+## How it fits together
 
 ```mermaid
 sequenceDiagram
