@@ -55,6 +55,7 @@ sequenceDiagram
 | `SLACK_ICON_URL` | Bot icon URL in Slack | No |
 | `HOST` | Public URL of this service (used for 46elks callbacks) | Yes |
 | `VOICEMAIL_AUDIO` | URL of audio file to play to callers | Yes |
+| `WEBHOOK_SECRET` | Shared secret for authenticating 46elks webhooks (query param `?secret=`) | No |
 | `PORT` | HTTP port (default: `3000`) | No |
 
 ## Running

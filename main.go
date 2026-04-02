@@ -33,6 +33,7 @@ type Configuration struct {
 	S3Endpoint     string
 	S3BucketName   string
 	OpenAIAPIKey   string
+	WebhookSecret  string
 }
 
 type SlackPayload struct {
@@ -106,6 +107,18 @@ func (w *whisperTranscriber) Transcribe(ctx context.Context, audio []byte, filen
 	return result.Text, nil
 }
 
+func checkSecret(config Configuration, w http.ResponseWriter, r *http.Request) bool {
+	if config.WebhookSecret == "" {
+		return true
+	}
+	if r.URL.Query().Get("secret") != config.WebhookSecret {
+		slog.Warn("rejected request with invalid secret", "path", r.URL.Path, "remote", r.RemoteAddr)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
 func newMux(config Configuration, httpClient *http.Client, uploader objectUploader, t transcriber) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -115,13 +128,20 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 	})
 
 	mux.HandleFunc("POST /incoming_call", func(w http.ResponseWriter, r *http.Request) {
+		if !checkSecret(config, w, r) {
+			return
+		}
+		voicemailURL := config.Host + "/voicemail"
+		if config.WebhookSecret != "" {
+			voicemailURL += "?secret=" + config.WebhookSecret
+		}
 		resp := IncomingResponse{
 			Play: config.VoicemailAudio,
 			Next: struct {
 				Record           string `json:"record"`
 				SilenceDetection string `json:"silencedetection"`
 			}{
-				Record:           config.Host + "/voicemail",
+				Record:           voicemailURL,
 				SilenceDetection: "no",
 			},
 		}
@@ -130,6 +150,10 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 	})
 
 	mux.HandleFunc("POST /voicemail", func(w http.ResponseWriter, r *http.Request) {
+		if !checkSecret(config, w, r) {
+			return
+		}
+
 		if err := r.ParseForm(); err != nil {
 			slog.Error("failed to parse form", "error", err)
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -268,6 +292,7 @@ func main() {
 		S3Endpoint:      os.Getenv("S3_ENDPOINT"),
 		S3BucketName:    os.Getenv("S3_BUCKET_NAME"),
 		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
+		WebhookSecret:  os.Getenv("WEBHOOK_SECRET"),
 	}
 
 	if config.S3BucketName == "" || config.S3Endpoint == "" || config.S3Region == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" {
