@@ -25,7 +25,6 @@ primary_region = 'ams'
     timeout = "5s"
 
 [[vm]]
-  memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 256
