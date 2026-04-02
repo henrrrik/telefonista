@@ -83,6 +83,74 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestWebhookSecretRejectsInvalidSecret(t *testing.T) {
+	cfg := testConfig()
+	cfg.WebhookSecret = "mysecret"
+	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
+
+	req := httptest.NewRequest("POST", "/incoming_call", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without secret, got %d", w.Code)
+	}
+
+	req = httptest.NewRequest("POST", "/incoming_call?secret=wrong", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong secret, got %d", w.Code)
+	}
+}
+
+func TestWebhookSecretAcceptsValidSecret(t *testing.T) {
+	cfg := testConfig()
+	cfg.WebhookSecret = "mysecret"
+	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
+
+	req := httptest.NewRequest("POST", "/incoming_call?secret=mysecret", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid secret, got %d", w.Code)
+	}
+}
+
+func TestWebhookSecretNotRequiredWhenUnset(t *testing.T) {
+	cfg := testConfig()
+	cfg.WebhookSecret = ""
+	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
+
+	req := httptest.NewRequest("POST", "/incoming_call", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 without secret configured, got %d", w.Code)
+	}
+}
+
+func TestIncomingCallIncludesSecretInCallbackURL(t *testing.T) {
+	cfg := testConfig()
+	cfg.WebhookSecret = "mysecret"
+	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
+
+	req := httptest.NewRequest("POST", "/incoming_call?secret=mysecret", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	var resp IncomingResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	expected := cfg.Host + "/voicemail?secret=mysecret"
+	if resp.Next.Record != expected {
+		t.Fatalf("expected callback URL %q, got %q", expected, resp.Next.Record)
+	}
+}
+
 func TestIncomingCall(t *testing.T) {
 	cfg := testConfig()
 	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
