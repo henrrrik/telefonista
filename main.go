@@ -299,8 +299,8 @@ func main() {
 		WebhookSecret:  os.Getenv("WEBHOOK_SECRET"),
 	}
 
-	if config.S3BucketName == "" || config.S3Endpoint == "" || config.S3Region == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" {
-		slog.Error("missing required environment variables: S3_BUCKET_NAME, S3_ENDPOINT, S3_REGION, ELKS_USERNAME, SLACK_WEBHOOK_URL")
+	if config.S3BucketName == "" || config.S3Endpoint == "" || config.S3Region == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" || config.WebhookSecret == "" {
+		slog.Error("missing required environment variables: S3_BUCKET_NAME, S3_ENDPOINT, S3_REGION, ELKS_USERNAME, SLACK_WEBHOOK_URL, WEBHOOK_SECRET")
 		os.Exit(1)
 	}
 
