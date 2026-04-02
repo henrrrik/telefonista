@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -202,7 +204,9 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 		}
 
 		// Upload to Hetzner Object Storage
-		path := "voicemail/" + time.Now().Format("20060102150405") + ".wav"
+		suffix := make([]byte, 4)
+		rand.Read(suffix)
+		path := "voicemail/" + time.Now().Format("20060102150405") + "-" + hex.EncodeToString(suffix) + ".wav"
 		slog.Info("uploading to object storage", "bucket", config.S3BucketName, "path", path)
 
 		_, err = uploader.PutObject(r.Context(), &s3.PutObjectInput{
