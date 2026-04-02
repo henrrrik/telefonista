@@ -109,6 +109,11 @@ func (w *whisperTranscriber) Transcribe(ctx context.Context, audio []byte, filen
 func newMux(config Configuration, httpClient *http.Client, uploader objectUploader, t transcriber) *http.ServeMux {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
 	mux.HandleFunc("POST /incoming_call", func(w http.ResponseWriter, r *http.Request) {
 		resp := IncomingResponse{
 			Play: config.VoicemailAudio,
