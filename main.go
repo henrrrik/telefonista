@@ -164,10 +164,16 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 		}
 		defer resp.Body.Close()
 
-		audio, err := io.ReadAll(resp.Body)
+		const maxWAVSize = 50 * 1024 * 1024 // 50MB
+		audio, err := io.ReadAll(io.LimitReader(resp.Body, maxWAVSize+1))
 		if err != nil {
 			slog.Error("failed to read WAV body", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if len(audio) > maxWAVSize {
+			slog.Error("WAV file exceeds size limit", "size", len(audio), "max", maxWAVSize)
+			http.Error(w, "recording too large", http.StatusBadRequest)
 			return
 		}
 
