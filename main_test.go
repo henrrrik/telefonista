@@ -63,6 +63,26 @@ func newElksServer(data []byte) *httptest.Server {
 	}))
 }
 
+func TestHealth(t *testing.T) {
+	mux := newMux(testConfig(), http.DefaultClient, &mockUploader{}, nil)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %q", body["status"])
+	}
+}
+
 func TestIncomingCall(t *testing.T) {
 	cfg := testConfig()
 	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)

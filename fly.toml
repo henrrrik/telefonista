@@ -16,6 +16,14 @@ primary_region = 'ams'
   min_machines_running = 0
   processes = ['app']
 
+[checks]
+  [checks.health]
+    type = "http"
+    port = 3000
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
