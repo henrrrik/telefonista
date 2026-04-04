@@ -39,15 +39,15 @@ func (m *mockTranscriber) Transcribe(_ context.Context, _ []byte, _ string) (str
 
 func testConfig() Configuration {
 	return Configuration{
-		SlackName:       "testbot",
-		SlackIconURL:    "https://example.com/icon.png",
-		SlackChannel:    "#test",
-		Host:            "https://example.com",
-		VoicemailAudio:  "https://example.com/greeting.wav",
-		ElksUserName:    "testuser",
-		ElksPassword:    "testpass",
-		S3Endpoint:      "https://s3.example.com",
-		S3BucketName:    "test-bucket",
+		SlackName:      "testbot",
+		SlackIconURL:   "https://example.com/icon.png",
+		SlackChannel:   "#test",
+		Host:           "https://example.com",
+		VoicemailAudio: "https://example.com/greeting.wav",
+		ElksUserName:   "testuser",
+		ElksPassword:   "testpass",
+		S3Endpoint:     "https://s3.example.com",
+		S3BucketName:   "test-bucket",
 	}
 }
 

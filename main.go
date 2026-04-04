@@ -29,13 +29,13 @@ type Configuration struct {
 	VoicemailAudio  string
 	ElksUserName    string
 	ElksPassword    string
-	S3AccessKey    string
-	S3SecretKey    string
-	S3Region       string
-	S3Endpoint     string
-	S3BucketName   string
-	OpenAIAPIKey   string
-	WebhookSecret  string
+	S3AccessKey     string
+	S3SecretKey     string
+	S3Region        string
+	S3Endpoint      string
+	S3BucketName    string
+	OpenAIAPIKey    string
+	WebhookSecret   string
 }
 
 type SlackPayload struct {
@@ -296,7 +296,7 @@ func main() {
 		S3Endpoint:      os.Getenv("S3_ENDPOINT"),
 		S3BucketName:    os.Getenv("S3_BUCKET_NAME"),
 		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
-		WebhookSecret:  os.Getenv("WEBHOOK_SECRET"),
+		WebhookSecret:   os.Getenv("WEBHOOK_SECRET"),
 	}
 
 	if config.S3BucketName == "" || config.S3Endpoint == "" || config.S3Region == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" || config.WebhookSecret == "" {
