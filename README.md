@@ -12,10 +12,10 @@ Optionally transcribes voicemails using OpenAI's Whisper API.
 
 ## What you need
 
-- Somewhere to host the service (I use [Fly.io](https://fly.io))
-- S3-compatible object storage (I use [Hetzner](https://www.hetzner.com))
+- Somewhere to host the service (I use [Runway](https://runway.horse)) 🇪🇺
+- S3-compatible object storage (I use [Hetzner](https://www.hetzner.com)) 🇪🇺
 - [Slack](https://slack.com/) (you need to create a custom App with an incoming web hook enabled)
-- An [46elks](https://46elks.se) account and a phone number with `voice_call` set to your `<hostname>/incoming_call?secret=<secret>`)
+- An [46elks](https://46elks.se) 🇪🇺 account and a phone number with `voice_call` set to your `<hostname>/incoming_call?secret=<secret>`)
 - An [OpenAI](https://platform.openai.com/) API key (if you want speech-to-text transcription)
 - An audio file with your intro message (mp3, ogg or wav format)
 
