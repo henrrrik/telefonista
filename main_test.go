@@ -48,6 +48,8 @@ func testConfig() Configuration {
 		ElksPassword:   "testpass",
 		S3Endpoint:     "https://s3.example.com",
 		S3BucketName:   "test-bucket",
+		WebhookUser:    "webhookuser",
+		WebhookPass:    "webhookpass",
 	}
 }
 
@@ -83,9 +85,8 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestWebhookSecretRejectsInvalidSecret(t *testing.T) {
+func TestBasicAuthRejectsUnauthenticated(t *testing.T) {
 	cfg := testConfig()
-	cfg.WebhookSecret = "mysecret"
 	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
 
 	req := httptest.NewRequest("POST", "/incoming_call", nil)
@@ -93,59 +94,51 @@ func TestWebhookSecretRejectsInvalidSecret(t *testing.T) {
 	mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without secret, got %d", w.Code)
-	}
-
-	req = httptest.NewRequest("POST", "/incoming_call?secret=wrong", nil)
-	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 with wrong secret, got %d", w.Code)
+		t.Fatalf("expected 401 without credentials, got %d", w.Code)
 	}
 }
 
-func TestWebhookSecretAcceptsValidSecret(t *testing.T) {
+func TestBasicAuthRejectsWrongCredentials(t *testing.T) {
 	cfg := testConfig()
-	cfg.WebhookSecret = "mysecret"
-	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
-
-	req := httptest.NewRequest("POST", "/incoming_call?secret=mysecret", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 with valid secret, got %d", w.Code)
-	}
-}
-
-func TestWebhookSecretNotRequiredWhenUnset(t *testing.T) {
-	cfg := testConfig()
-	cfg.WebhookSecret = ""
 	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
 
 	req := httptest.NewRequest("POST", "/incoming_call", nil)
+	req.SetBasicAuth("wrong", "wrong")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong credentials, got %d", w.Code)
+	}
+}
+
+func TestBasicAuthAcceptsValidCredentials(t *testing.T) {
+	cfg := testConfig()
+	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
+
+	req := httptest.NewRequest("POST", "/incoming_call", nil)
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 without secret configured, got %d", w.Code)
+		t.Fatalf("expected 200 with valid credentials, got %d", w.Code)
 	}
 }
 
-func TestIncomingCallIncludesSecretInCallbackURL(t *testing.T) {
+func TestIncomingCallIncludesCredentialsInCallbackURL(t *testing.T) {
 	cfg := testConfig()
-	cfg.WebhookSecret = "mysecret"
 	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
 
-	req := httptest.NewRequest("POST", "/incoming_call?secret=mysecret", nil)
+	req := httptest.NewRequest("POST", "/incoming_call", nil)
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
 	var resp IncomingResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	expected := cfg.Host + "/voicemail?secret=mysecret"
+	expected := "https://webhookuser:webhookpass@example.com/voicemail"
 	if resp.Next.Record != expected {
 		t.Fatalf("expected callback URL %q, got %q", expected, resp.Next.Record)
 	}
@@ -156,6 +149,7 @@ func TestIncomingCall(t *testing.T) {
 	mux := newMux(cfg, http.DefaultClient, &mockUploader{}, nil)
 
 	req := httptest.NewRequest("POST", "/incoming_call", nil)
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -175,9 +169,6 @@ func TestIncomingCall(t *testing.T) {
 
 	if resp.Play != cfg.VoicemailAudio {
 		t.Errorf("expected play=%q, got %q", cfg.VoicemailAudio, resp.Play)
-	}
-	if resp.Next.Record != cfg.Host+"/voicemail" {
-		t.Errorf("expected next.record=%q, got %q", cfg.Host+"/voicemail", resp.Next.Record)
 	}
 }
 
@@ -209,6 +200,7 @@ func TestVoicemailMissingFields(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(tt.values.Encode()))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.SetBasicAuth("webhookuser", "webhookpass")
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, req)
 
@@ -244,6 +236,7 @@ func TestVoicemailSuccess(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -314,6 +307,7 @@ func TestVoicemailNoTranscriber(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -356,6 +350,7 @@ func TestVoicemailTranscriptionFailureStillSucceeds(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -395,6 +390,7 @@ func TestVoicemailTooLarge(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -422,6 +418,7 @@ func TestVoicemailS3Failure(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -448,6 +445,7 @@ func TestVoicemailSlackFailureStillSucceeds(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/voicemail", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("webhookuser", "webhookpass")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
