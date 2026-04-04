@@ -1,4 +1,4 @@
-module github.com/kollegorna/telefonista
+module github.com/henrrrik/telefonista
 
 go 1.26.1
 
