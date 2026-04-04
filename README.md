@@ -70,12 +70,6 @@ sequenceDiagram
 | `WEBHOOK_SECRET` | Shared secret for authenticating 46elks webhooks (query param `?secret=`) | Yes |
 | `PORT` | HTTP port (default: `3000`) | No |
 
-## Running
-
-```sh
-go build -o telefonista
-./telefonista
-```
 
 ## License
 
