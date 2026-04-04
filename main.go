@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -35,7 +36,8 @@ type Configuration struct {
 	S3Endpoint      string
 	S3BucketName    string
 	OpenAIAPIKey    string
-	WebhookSecret   string
+	WebhookUser     string
+	WebhookPass     string
 }
 
 type SlackPayload struct {
@@ -109,12 +111,14 @@ func (w *whisperTranscriber) Transcribe(ctx context.Context, audio []byte, filen
 	return result.Text, nil
 }
 
-func checkSecret(config Configuration, w http.ResponseWriter, r *http.Request) bool {
-	if config.WebhookSecret == "" {
-		return true
-	}
-	if r.URL.Query().Get("secret") != config.WebhookSecret {
-		slog.Warn("rejected request with invalid secret", "path", r.URL.Path, "remote", r.RemoteAddr)
+func (c Configuration) webhookURL() string {
+	return strings.Replace(c.Host, "://", "://"+c.WebhookUser+":"+c.WebhookPass+"@", 1)
+}
+
+func checkAuth(config Configuration, w http.ResponseWriter, r *http.Request) bool {
+	user, pass, ok := r.BasicAuth()
+	if !ok || user != config.WebhookUser || pass != config.WebhookPass {
+		slog.Warn("rejected request with invalid credentials", "path", r.URL.Path, "remote", r.RemoteAddr)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
@@ -130,13 +134,10 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 	})
 
 	mux.HandleFunc("POST /incoming_call", func(w http.ResponseWriter, r *http.Request) {
-		if !checkSecret(config, w, r) {
+		if !checkAuth(config, w, r) {
 			return
 		}
-		voicemailURL := config.Host + "/voicemail"
-		if config.WebhookSecret != "" {
-			voicemailURL += "?secret=" + config.WebhookSecret
-		}
+		voicemailURL := config.webhookURL() + "/voicemail"
 		resp := IncomingResponse{
 			Play: config.VoicemailAudio,
 			Next: struct {
@@ -152,7 +153,7 @@ func newMux(config Configuration, httpClient *http.Client, uploader objectUpload
 	})
 
 	mux.HandleFunc("POST /voicemail", func(w http.ResponseWriter, r *http.Request) {
-		if !checkSecret(config, w, r) {
+		if !checkAuth(config, w, r) {
 			return
 		}
 
@@ -296,11 +297,12 @@ func main() {
 		S3Endpoint:      os.Getenv("S3_ENDPOINT"),
 		S3BucketName:    os.Getenv("S3_BUCKET_NAME"),
 		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
-		WebhookSecret:   os.Getenv("WEBHOOK_SECRET"),
+		WebhookUser:     os.Getenv("WEBHOOK_USER"),
+		WebhookPass:     os.Getenv("WEBHOOK_PASS"),
 	}
 
-	if config.S3BucketName == "" || config.S3Endpoint == "" || config.S3Region == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" || config.WebhookSecret == "" {
-		slog.Error("missing required environment variables: S3_BUCKET_NAME, S3_ENDPOINT, S3_REGION, ELKS_USERNAME, SLACK_WEBHOOK_URL, WEBHOOK_SECRET")
+	if config.S3BucketName == "" || config.S3Endpoint == "" || config.S3Region == "" || config.ElksUserName == "" || config.SlackWebHookURL == "" || config.WebhookUser == "" || config.WebhookPass == "" {
+		slog.Error("missing required environment variables: S3_BUCKET_NAME, S3_ENDPOINT, S3_REGION, ELKS_USERNAME, SLACK_WEBHOOK_URL, WEBHOOK_USER, WEBHOOK_PASS")
 		os.Exit(1)
 	}
 
