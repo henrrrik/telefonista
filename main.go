@@ -125,159 +125,169 @@ func checkAuth(config Configuration, w http.ResponseWriter, r *http.Request) boo
 	return true
 }
 
+type server struct {
+	config      Configuration
+	httpClient  *http.Client
+	uploader    objectUploader
+	transcriber transcriber
+}
+
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *server) handleIncomingCall(w http.ResponseWriter, r *http.Request) {
+	if !checkAuth(s.config, w, r) {
+		return
+	}
+	voicemailURL := s.config.webhookURL() + "/voicemail"
+	resp := IncomingResponse{
+		Play: s.config.VoicemailAudio,
+		Next: struct {
+			Record           string `json:"record"`
+			SilenceDetection string `json:"silencedetection"`
+		}{
+			Record:           voicemailURL,
+			SilenceDetection: "no",
+		},
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *server) handleVoicemail(w http.ResponseWriter, r *http.Request) {
+	if !checkAuth(s.config, w, r) {
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		slog.Error("failed to parse form", "error", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	from := r.FormValue("from")
+	wav := r.FormValue("wav")
+	if from == "" || wav == "" {
+		slog.Warn("missing required form fields", "from", from, "wav", wav)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("voicemail received", "from", from)
+
+	// Download WAV from 46elks
+	slog.Info("downloading WAV", "url", wav)
+	req, err := http.NewRequestWithContext(r.Context(), "GET", wav, nil)
+	if err != nil {
+		slog.Error("failed to create WAV request", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	req.SetBasicAuth(s.config.ElksUserName, s.config.ElksPassword)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		slog.Error("failed to download WAV", "error", err, "url", wav)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	const maxWAVSize = 50 * 1024 * 1024 // 50MB
+	audio, err := io.ReadAll(io.LimitReader(resp.Body, maxWAVSize+1))
+	if err != nil {
+		slog.Error("failed to read WAV body", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if len(audio) > maxWAVSize {
+		slog.Error("WAV file exceeds size limit", "size", len(audio), "max", maxWAVSize)
+		http.Error(w, "recording too large", http.StatusBadRequest)
+		return
+	}
+
+	// Upload to Hetzner Object Storage
+	suffix := make([]byte, 4)
+	rand.Read(suffix)
+	path := "voicemail/" + time.Now().Format("20060102150405") + "-" + hex.EncodeToString(suffix) + ".wav"
+	slog.Info("uploading to object storage", "bucket", s.config.S3BucketName, "path", path)
+
+	_, err = s.uploader.PutObject(r.Context(), &s3.PutObjectInput{
+		Bucket:      aws.String(s.config.S3BucketName),
+		Key:         aws.String(path),
+		Body:        bytes.NewReader(audio),
+		ContentType: aws.String("audio/wav"),
+		ACL:         types.ObjectCannedACLPublicRead,
+	})
+	if err != nil {
+		slog.Error("failed to upload to object storage", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Transcribe audio
+	var transcription string
+	if s.transcriber != nil {
+		slog.Info("transcribing audio")
+		transcription, err = s.transcriber.Transcribe(r.Context(), audio, "voicemail.wav")
+		if err != nil {
+			slog.Error("transcription failed", "error", err)
+			// Continue without transcription — voicemail is saved
+		}
+	}
+
+	// Post to Slack
+	s3URL := fmt.Sprintf("%s/%s/%s", s.config.S3Endpoint, s.config.S3BucketName, path)
+	slog.Info("posting to Slack", "channel", s.config.SlackChannel)
+
+	slackText := "New voice message from " + from + " <" + s3URL + ">!"
+	if transcription != "" {
+		slackText += "\n>" + transcription
+	}
+
+	payload := SlackPayload{
+		UserName: s.config.SlackName,
+		IconURL:  s.config.SlackIconURL,
+		Text:     slackText,
+		Channel:  s.config.SlackChannel,
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("failed to marshal Slack payload", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	slackReq, err := http.NewRequestWithContext(r.Context(), "POST", s.config.SlackWebHookURL, bytes.NewReader(jsonPayload))
+	if err != nil {
+		slog.Error("failed to create Slack request", "error", err)
+		// Voicemail is saved, don't fail the response
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		return
+	}
+	slackReq.Header.Set("Content-Type", "application/json")
+
+	slackResp, err := s.httpClient.Do(slackReq)
+	if err != nil {
+		slog.Error("failed to post to Slack", "error", err)
+		// Voicemail is saved, don't fail the response
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		return
+	}
+	defer slackResp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+}
+
 func newMux(config Configuration, httpClient *http.Client, uploader objectUploader, t transcriber) *http.ServeMux {
+	s := &server{config: config, httpClient: httpClient, uploader: uploader, transcriber: t}
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-
-	mux.HandleFunc("POST /incoming_call", func(w http.ResponseWriter, r *http.Request) {
-		if !checkAuth(config, w, r) {
-			return
-		}
-		voicemailURL := config.webhookURL() + "/voicemail"
-		resp := IncomingResponse{
-			Play: config.VoicemailAudio,
-			Next: struct {
-				Record           string `json:"record"`
-				SilenceDetection string `json:"silencedetection"`
-			}{
-				Record:           voicemailURL,
-				SilenceDetection: "no",
-			},
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		json.NewEncoder(w).Encode(resp)
-	})
-
-	mux.HandleFunc("POST /voicemail", func(w http.ResponseWriter, r *http.Request) {
-		if !checkAuth(config, w, r) {
-			return
-		}
-
-		if err := r.ParseForm(); err != nil {
-			slog.Error("failed to parse form", "error", err)
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		from := r.FormValue("from")
-		wav := r.FormValue("wav")
-		if from == "" || wav == "" {
-			slog.Warn("missing required form fields", "from", from, "wav", wav)
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		slog.Info("voicemail received", "from", from)
-
-		// Download WAV from 46elks
-		slog.Info("downloading WAV", "url", wav)
-		req, err := http.NewRequestWithContext(r.Context(), "GET", wav, nil)
-		if err != nil {
-			slog.Error("failed to create WAV request", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		req.SetBasicAuth(config.ElksUserName, config.ElksPassword)
-
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			slog.Error("failed to download WAV", "error", err, "url", wav)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		defer resp.Body.Close()
-
-		const maxWAVSize = 50 * 1024 * 1024 // 50MB
-		audio, err := io.ReadAll(io.LimitReader(resp.Body, maxWAVSize+1))
-		if err != nil {
-			slog.Error("failed to read WAV body", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		if len(audio) > maxWAVSize {
-			slog.Error("WAV file exceeds size limit", "size", len(audio), "max", maxWAVSize)
-			http.Error(w, "recording too large", http.StatusBadRequest)
-			return
-		}
-
-		// Upload to Hetzner Object Storage
-		suffix := make([]byte, 4)
-		rand.Read(suffix)
-		path := "voicemail/" + time.Now().Format("20060102150405") + "-" + hex.EncodeToString(suffix) + ".wav"
-		slog.Info("uploading to object storage", "bucket", config.S3BucketName, "path", path)
-
-		_, err = uploader.PutObject(r.Context(), &s3.PutObjectInput{
-			Bucket:      aws.String(config.S3BucketName),
-			Key:         aws.String(path),
-			Body:        bytes.NewReader(audio),
-			ContentType: aws.String("audio/wav"),
-			ACL:         types.ObjectCannedACLPublicRead,
-		})
-		if err != nil {
-			slog.Error("failed to upload to object storage", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-
-		// Transcribe audio
-		var transcription string
-		if t != nil {
-			slog.Info("transcribing audio")
-			transcription, err = t.Transcribe(r.Context(), audio, "voicemail.wav")
-			if err != nil {
-				slog.Error("transcription failed", "error", err)
-				// Continue without transcription — voicemail is saved
-			}
-		}
-
-		// Post to Slack
-		s3URL := fmt.Sprintf("%s/%s/%s", config.S3Endpoint, config.S3BucketName, path)
-		slog.Info("posting to Slack", "channel", config.SlackChannel)
-
-		slackText := "New voice message from " + from + " <" + s3URL + ">!"
-		if transcription != "" {
-			slackText += "\n>" + transcription
-		}
-
-		payload := SlackPayload{
-			UserName: config.SlackName,
-			IconURL:  config.SlackIconURL,
-			Text:     slackText,
-			Channel:  config.SlackChannel,
-		}
-
-		jsonPayload, err := json.Marshal(payload)
-		if err != nil {
-			slog.Error("failed to marshal Slack payload", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-
-		slackReq, err := http.NewRequestWithContext(r.Context(), "POST", config.SlackWebHookURL, bytes.NewReader(jsonPayload))
-		if err != nil {
-			slog.Error("failed to create Slack request", "error", err)
-			// Voicemail is saved, don't fail the response
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			return
-		}
-		slackReq.Header.Set("Content-Type", "application/json")
-
-		slackResp, err := httpClient.Do(slackReq)
-		if err != nil {
-			slog.Error("failed to post to Slack", "error", err)
-			// Voicemail is saved, don't fail the response
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			return
-		}
-		defer slackResp.Body.Close()
-
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	})
-
+	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("POST /incoming_call", s.handleIncomingCall)
+	mux.HandleFunc("POST /voicemail", s.handleVoicemail)
 	return mux
 }
 
