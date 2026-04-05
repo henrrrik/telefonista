@@ -10,6 +10,7 @@ Telefonista is a simple voicemail service that sends recorded messages to a Slac
 - `go test -v -race ./...` — run tests (matches CI)
 - `go fmt ./...` run before committing
 - `go vet ./...` — run before committing
+- `gocyclo -over 15 .` — run before committing (no functions should exceed 15)
 
 # Project
 - Single-package Go app (all code in root main package)
