@@ -1,5 +1,7 @@
 # Telefonista
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/henrrrik/telefonista)](https://goreportcard.com/report/github.com/henrrrik/telefonista)
+
 ![](https://upload.wikimedia.org/wikipedia/commons/0/0c/Bureau_téléphonique_parisien_vers_1900.jpg)
 
 Telefonista is a simple voicemail service that sends recorded messages to a
