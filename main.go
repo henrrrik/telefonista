@@ -12,7 +12,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -345,9 +347,22 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	slog.Info("starting server", "port", port)
-	if err := srv.ListenAndServe(); err != nil {
-		slog.Error("server failed", "error", err)
-		os.Exit(1)
+	go func() {
+		slog.Info("starting server", "port", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	slog.Info("shutting down server")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("shutdown error", "error", err)
 	}
 }
