@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -127,6 +128,8 @@ func checkAuth(config Configuration, w http.ResponseWriter, r *http.Request) boo
 	return true
 }
 
+var errWAVTooLarge = errors.New("WAV file exceeds size limit")
+
 type server struct {
 	config      Configuration
 	httpClient  *http.Client
@@ -158,6 +161,62 @@ func (s *server) handleIncomingCall(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (s *server) downloadWAV(ctx context.Context, wavURL string) ([]byte, error) {
+	slog.Info("downloading WAV", "url", wavURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", wavURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating WAV request: %w", err)
+	}
+	req.SetBasicAuth(s.config.ElksUserName, s.config.ElksPassword)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading WAV: %w", err)
+	}
+	defer resp.Body.Close()
+
+	const maxWAVSize = 50 * 1024 * 1024 // 50MB
+	audio, err := io.ReadAll(io.LimitReader(resp.Body, maxWAVSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading WAV body: %w", err)
+	}
+	if len(audio) > maxWAVSize {
+		return nil, errWAVTooLarge
+	}
+	return audio, nil
+}
+
+func (s *server) postToSlack(ctx context.Context, text string) {
+	slog.Info("posting to Slack", "channel", s.config.SlackChannel)
+
+	payload := SlackPayload{
+		UserName: s.config.SlackName,
+		IconURL:  s.config.SlackIconURL,
+		Text:     text,
+		Channel:  s.config.SlackChannel,
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("failed to marshal Slack payload", "error", err)
+		return
+	}
+
+	slackReq, err := http.NewRequestWithContext(ctx, "POST", s.config.SlackWebHookURL, bytes.NewReader(jsonPayload))
+	if err != nil {
+		slog.Error("failed to create Slack request", "error", err)
+		return
+	}
+	slackReq.Header.Set("Content-Type", "application/json")
+
+	slackResp, err := s.httpClient.Do(slackReq)
+	if err != nil {
+		slog.Error("failed to post to Slack", "error", err)
+		return
+	}
+	defer slackResp.Body.Close()
+}
+
 func (s *server) handleVoicemail(w http.ResponseWriter, r *http.Request) {
 	if !checkAuth(s.config, w, r) {
 		return
@@ -179,34 +238,14 @@ func (s *server) handleVoicemail(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("voicemail received", "from", from)
 
-	// Download WAV from 46elks
-	slog.Info("downloading WAV", "url", wav)
-	req, err := http.NewRequestWithContext(r.Context(), "GET", wav, nil)
-	if err != nil {
-		slog.Error("failed to create WAV request", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	audio, err := s.downloadWAV(r.Context(), wav)
+	if errors.Is(err, errWAVTooLarge) {
+		slog.Error("WAV file exceeds size limit", "url", wav)
+		http.Error(w, "recording too large", http.StatusBadRequest)
 		return
-	}
-	req.SetBasicAuth(s.config.ElksUserName, s.config.ElksPassword)
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
+	} else if err != nil {
 		slog.Error("failed to download WAV", "error", err, "url", wav)
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	const maxWAVSize = 50 * 1024 * 1024 // 50MB
-	audio, err := io.ReadAll(io.LimitReader(resp.Body, maxWAVSize+1))
-	if err != nil {
-		slog.Error("failed to read WAV body", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if len(audio) > maxWAVSize {
-		slog.Error("WAV file exceeds size limit", "size", len(audio), "max", maxWAVSize)
-		http.Error(w, "recording too large", http.StatusBadRequest)
 		return
 	}
 
@@ -242,44 +281,11 @@ func (s *server) handleVoicemail(w http.ResponseWriter, r *http.Request) {
 
 	// Post to Slack
 	s3URL := fmt.Sprintf("%s/%s/%s", s.config.S3Endpoint, s.config.S3BucketName, path)
-	slog.Info("posting to Slack", "channel", s.config.SlackChannel)
-
 	slackText := "New voice message from " + from + " <" + s3URL + ">!"
 	if transcription != "" {
 		slackText += "\n>" + transcription
 	}
-
-	payload := SlackPayload{
-		UserName: s.config.SlackName,
-		IconURL:  s.config.SlackIconURL,
-		Text:     slackText,
-		Channel:  s.config.SlackChannel,
-	}
-
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		slog.Error("failed to marshal Slack payload", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	slackReq, err := http.NewRequestWithContext(r.Context(), "POST", s.config.SlackWebHookURL, bytes.NewReader(jsonPayload))
-	if err != nil {
-		slog.Error("failed to create Slack request", "error", err)
-		// Voicemail is saved, don't fail the response
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		return
-	}
-	slackReq.Header.Set("Content-Type", "application/json")
-
-	slackResp, err := s.httpClient.Do(slackReq)
-	if err != nil {
-		slog.Error("failed to post to Slack", "error", err)
-		// Voicemail is saved, don't fail the response
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		return
-	}
-	defer slackResp.Body.Close()
+	s.postToSlack(r.Context(), slackText)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 }
