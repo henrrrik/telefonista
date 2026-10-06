@@ -1,12 +1,11 @@
 # Telefonista
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/henrrrik/telefonista)](https://goreportcard.com/report/github.com/henrrrik/telefonista)
-
 ![](https://upload.wikimedia.org/wikipedia/commons/0/0c/Bureau_téléphonique_parisien_vers_1900.jpg)
 
 Telefonista is a simple voicemail service that sends recorded messages to a
 Slack channel (or user). It uses the [46elks](https://46elks.com/) telephony
-API and stores recordings in S3-compatible object storage (e.g. Hetzner).
+API and stores recordings privately in S3-compatible object storage (e.g.
+Hetzner).
 Optionally transcribes voicemails using OpenAI's Whisper API.
 
 
@@ -17,7 +16,7 @@ Optionally transcribes voicemails using OpenAI's Whisper API.
 - Somewhere to host the service (I use [Runway](https://runway.horse)) 🇪🇺
 - S3-compatible object storage (I use [Hetzner](https://www.hetzner.com)) 🇪🇺
 - [Slack](https://slack.com/) (you need to create a custom App with an incoming web hook enabled)
-- An [46elks](https://46elks.se) 🇪🇺 account and a phone number with `voice_call` set to your `<hostname>/incoming_call?secret=<secret>`)
+- An [46elks](https://46elks.se) 🇪🇺 account and a phone number with `voice_call` set to `https://<WEBHOOK_USER>:<WEBHOOK_PASS>@<hostname>/incoming_call`
 - An [OpenAI](https://platform.openai.com/) API key (if you want speech-to-text transcription)
 - An audio file with your intro message (mp3, ogg or wav format)
 
@@ -40,16 +39,26 @@ sequenceDiagram
       46elks->>Telefonista: POST /voicemail (from, wav URL)
       Telefonista->>46elks: GET wav URL (Basic Auth)
       46elks-->>Telefonista: WAV audio data
-      Telefonista->>S3: PutObject (voicemail/*.wav)
+      Telefonista->>S3: PutObject (voicemail/*.wav, private)
       S3-->>Telefonista: OK
+      Telefonista-->>46elks: 200 OK
       opt OpenAI Whisper API
           Telefonista->>OpenAI: POST /v1/audio/transcriptions (WAV)
           OpenAI-->>Telefonista: Transcription text
       end
-      Telefonista->>Slack: POST webhook (message + S3 link + transcription)
+      Telefonista->>Slack: POST webhook (message + recording link + transcription)
       Slack-->>Telefonista: OK
-      Telefonista-->>46elks: 200 OK
 ```
+
+46elks gets its response as soon as the recording is stored. Transcription and
+the Slack notification happen in the background, so a slow transcription can't
+time out the callback.
+
+Recordings are uploaded without a public ACL. The Slack message links to
+`<HOST>/recordings/<name>`, which streams the file from object storage. The
+link's random name is what grants access, so treat it like a secret.
+Recordings larger than Whisper's 25 MB upload limit are posted without a
+transcription.
 
 ## Environment variables
 
@@ -67,9 +76,10 @@ sequenceDiagram
 | `SLACK_CHANNEL` | Slack channel to post to | No |
 | `SLACK_NAME` | Bot display name in Slack | No |
 | `SLACK_ICON_URL` | Bot icon URL in Slack | No |
-| `HOST` | Public URL of this service (used for 46elks callbacks) | Yes |
+| `HOST` | Public URL of this service (used for 46elks callbacks and recording links) | Yes |
 | `VOICEMAIL_AUDIO` | URL of audio file to play to callers | Yes |
-| `WEBHOOK_SECRET` | Shared secret for authenticating 46elks webhooks (query param `?secret=`) | Yes |
+| `WEBHOOK_USER` | Basic Auth username 46elks must use for webhooks | Yes |
+| `WEBHOOK_PASS` | Basic Auth password 46elks must use for webhooks | Yes |
 | `PORT` | HTTP port (default: `3000`) | No |
 
 ## Running
@@ -77,6 +87,15 @@ sequenceDiagram
 ```sh
 go build -o telefonista
 ./telefonista
+```
+
+## Development
+
+```sh
+make test       # go test -race
+make lint       # golangci-lint (config in .golangci.yml)
+make fmt        # gofmt -s + goimports via golangci-lint
+make vulncheck  # govulncheck
 ```
 
 ## License
